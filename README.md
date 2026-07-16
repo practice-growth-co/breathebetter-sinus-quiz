@@ -1,74 +1,86 @@
 # Sinus & Allergy Quiz — BreatheBetter Institute (rebuild)
 
-A self-contained rebuild of the SNOT-22 quiz at
+A self-contained rebuild of the SNOT-22 quiz formerly at
 `https://breathebetterhuntsville.com/sinus-allergy-quiz/`. One file
 ([index.html](index.html)), no dependencies, mobile-first.
 
-## What changed vs. the old quiz
+- **Staging:** https://practice-growth-co.github.io/breathebetter-sinus-quiz/
+- **Deploys:** push to `main` on `practice-growth-co/breathebetter-sinus-quiz`; GitHub Pages rebuilds in ~1 min.
 
-| | Old (forms.glacial.com embed) | New |
-|---|---|---|
-| Question flow | All 22 questions on one page (~132 radio rows) | One question per screen, tap to auto-advance (~2 min) |
-| Progress | Jumps 33% → 67% → 100% | Real "N of 22" progress bar |
-| Contact gate | Before the questions (step 2) | After the questions, framed as "see your results" |
-| Results | Hidden formula field, no interpretation shown | Animated score ring + severity band (Minimal / Mild / Moderate / Severe) + appointment CTA |
-| Keyboard | None | 0–5 number keys answer questions |
+## Architecture
 
-Scoring is identical: sum of 22 answers (0–5 each), 0–110 total (SNOT-22).
-Severity bands use the published SNOT-22 cutoffs: 0–7 minimal, 8–20 mild,
-21–50 moderate, 51+ severe.
+```
+Webflow page (iframe embed, passes ?utm_*/gclid/msclkid/fbclid through)
+   └── Quiz (index.html)  — builds RSI v2 JSON payload
+         └── Cloudflare Worker relay (rsi-relay-worker.js) — adds secret headers
+               └── RSI External Lead Webhook v2
+                   POST https://portal.redspotinteractive.com/api/v2/leads/webhook
+```
 
-## Red Spot Interactive (RSI) connection
+The Worker exists because Webflow can't run server-side code and the RSI
+credentials (API key / client id / signature) must not appear in public page
+source. Verified by probe: the RSI endpoint enforces the signature (401
+without it) and allows CORS, so the Worker is the only required middle piece.
 
-The old form carried these hidden fields, which RSI's `bundle.js`
-(`https://cdn.redspotinteractive.com/utm/bundle.js`, already loaded on the
-WordPress site) populates via the embed URL's query string:
+## What the quiz sends (RSI v2 field names, case-sensitive)
 
-- `RSI Client ID` = **922**, `RSI Campaign ID` = **60873** (static, set in `CONFIG`)
-- `UTMcampaign`, `UTMsource`, `UTMmedium`, `UTMcontent`, `UTMterm`, `UTMlandingpage`, `GCLID` (from URL params)
+| Field | Value |
+|---|---|
+| `firstName` / `lastName` | from contact step |
+| `email` / `phone` | from contact step |
+| `campaignId` | `60873` (set in `CONFIG`) |
+| `formName` | `SinusAllergyQuiz` |
+| `referralSource` | `Internet` |
+| `message` | SNOT-22 total score, severity band, and all 22 answers |
+| `utmCampaign/Source/Medium/Content/Term` | from quiz URL query string, only when present |
+| `googleClickId` / `microsoftClickId` / `fbclid` | gclid / msclkid / fbclid from query string |
 
-The new quiz reproduces all of them with the **exact same field names** in the
-submission payload, so RSI's lead mapping doesn't change.
+## Setup checklist
 
-### What you still need from RSI
+1. **Get the Signature from RSI Customer Success** (Client ID 922). We already
+   have the API key; the signature is the missing third credential — requests
+   without it get 401.
+2. **Deploy the Worker** (Cloudflare dashboard → Workers & Pages → Create →
+   paste `rsi-relay-worker.js`). Add variables under Settings → Variables &
+   Secrets: `RSI_API_KEY` (secret), `RSI_CLIENT_ID` (secret, `922`),
+   `RSI_SIGNATURE` (secret), and optionally `ALLOWED_ORIGINS` (plain text,
+   comma-separated — the Webflow domain + staging origin).
+3. **Point the quiz at the Worker:** set `CONFIG.submitUrl` in `index.html`
+   to the Worker URL, push to `main`.
+4. **Test:** submit the quiz using the client's designated test identity
+   (Test Test / test@test.com / (999) 999-9999) and confirm with RSI that the
+   lead landed on campaign 60873 with `formName: SinusAllergyQuiz`.
+5. **Launch:** remove the `noindex` meta tag in `index.html`, embed in Webflow
+   (below).
 
-Set `CONFIG.submitUrl` in `index.html` to the endpoint that delivers leads to
-RSI. Ask your RSI account rep for one of:
+## Embedding in Webflow
 
-1. **A lead-post/webhook URL** for client 922 / campaign 60873 (preferred —
-   the quiz POSTs JSON with the field names above), or
-2. **A lead-parsing email address** — in that case route the POST through a
-   small relay (WP plugin, Zapier, or a serverless function) that emails the
-   payload in RSI's expected format.
-
-Until `submitUrl` is set, submissions are logged to the browser console and
-nothing is sent (safe for staging).
-
-The quiz also pushes a `quiz_submission` event (with score) to `dataLayer`
-if Google Tag Manager is present, so the AW-17668209953 conversion tag can
-fire on it.
-
-## Embedding in WordPress
-
-Host `index.html` (upload to the theme, a subdomain, or keep it as a page
-template) and embed with query-string passthrough so RSI's UTM data reaches
-the quiz — same mechanism the old embed used:
+Add an **Embed** element to the page and paste:
 
 ```html
 <div id="sinus-quiz"></div>
 <script>
   (function () {
     var f = document.createElement("iframe");
-    f.src = "https://QUIZ-HOST/index.html" + window.location.search;
-    f.style.cssText = "width:100%;min-height:720px;border:0;";
+    f.src = "https://practice-growth-co.github.io/breathebetter-sinus-quiz/" + window.location.search;
+    f.style.cssText = "width:100%;min-height:760px;border:0;";
     f.title = "Sinus and Allergy Quiz";
+    f.loading = "lazy";
     document.getElementById("sinus-quiz").appendChild(f);
   })();
 </script>
 ```
 
-(If RSI's bundle.js rewrites embed URLs the way it did for the old form, it
-may handle the passthrough itself — verify with a `?utm_source=test` visit.)
+The `window.location.search` passthrough is what carries UTM tags and ad
+click IDs from the Webflow page URL into the quiz, so ads → landing page →
+quiz attribution keeps working. If the client wants the quiz on their own
+domain instead of github.io, the single `index.html` can be hosted anywhere
+(Cloudflare Pages on the same account as the Worker is a natural fit).
+
+Also re-add RSI's site-wide tracking script to the new Webflow site
+(`https://cdn.redspotinteractive.com/utm/bundle.js` was on the old WordPress
+site) via Site Settings → Custom Code, so RSI's own attribution features
+keep working across pages.
 
 ## Local preview
 
@@ -77,13 +89,5 @@ cd sinus-allergy-quiz && python3 -m http.server 8742
 # open http://localhost:8742/index.html?utm_source=test&gclid=TEST123
 ```
 
-## Config (top of the `<script>` block in index.html)
-
-```js
-const CONFIG = {
-  submitUrl: "",                 // RSI webhook / relay endpoint — REQUIRED before launch
-  rsiClientId: "922",
-  rsiCampaignId: "60873",
-  appointmentUrl: "https://breathebetterhuntsville.com/request-an-appointment/",
-};
-```
+With `CONFIG.submitUrl` empty, submissions are logged to the browser console
+and nothing is sent (safe for staging/demo).

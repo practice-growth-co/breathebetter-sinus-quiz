@@ -226,10 +226,13 @@
    CONFIG: edit these values per client / campaign
    ============================================================ */
 const CONFIG = {
-  // Where the submission is POSTed (see README for RSI options)
-  submitUrl: "", // e.g. your RSI-connected webhook or WP endpoint
-  rsiClientId: "922",
-  rsiCampaignId: "60873",
+  // Where the quiz POSTs its RSI-shaped JSON payload.
+  // Production: the Cloudflare Worker relay (see rsi-relay-worker.js), which adds
+  // the RSI security headers server-side so credentials never appear in page source.
+  // e.g. "https://rsi-lead-relay.<account>.workers.dev"
+  submitUrl: "",
+  campaignId: "60873",        // RSI campaign for this quiz
+  formName: "SinusAllergyQuiz",
   appointmentUrl: "https://breathebetterhuntsville.com/request-an-appointment/",
 };
 
@@ -335,19 +338,18 @@ const BANDS = [
    appends these to the embed URL, same as the old form)
    ============================================================ */
 function getParam(name) {
-  const p = new URLSearchParams(location.search);
-  return p.get(name) || "none";
+  return new URLSearchParams(location.search).get(name) || "";
 }
-const TRACKING = {
-  "RSI Client ID": CONFIG.rsiClientId,
-  "RSI Campaign ID": CONFIG.rsiCampaignId,
-  "UTMcampaign": getParam("utm_campaign"),
-  "UTMsource": getParam("utm_source"),
-  "UTMmedium": getParam("utm_medium"),
-  "UTMcontent": getParam("utm_content"),
-  "UTMterm": getParam("utm_term"),
-  "UTMlandingpage": getParam("utm_landingpage") !== "none" ? getParam("utm_landingpage") : (document.referrer || "none"),
-  "GCLID": getParam("gclid"),
+/* RSI External Lead Webhook v2 attribution fields; only sent when present */
+const ATTRIBUTION = {
+  utmCampaign: getParam("utm_campaign"),
+  utmSource: getParam("utm_source"),
+  utmMedium: getParam("utm_medium"),
+  utmContent: getParam("utm_content"),
+  utmTerm: getParam("utm_term"),
+  googleClickId: getParam("gclid"),
+  microsoftClickId: getParam("msclkid"),
+  fbclid: getParam("fbclid"),
 };
 
 /* ============================================================
@@ -455,18 +457,24 @@ function validate(form) {
 
 function buildPayload() {
   const score = answers.reduce((a, b) => a + (b || 0), 0);
+  const band = BANDS.find(b => score <= b.max);
+  const answerLines = QUESTIONS.map((q, i) =>
+    `${i + 1}. ${q.text}: ${answers[i]} (${OPTIONS[answers[i]]})`
+  ).join("\n");
+
+  /* Field names per RSI External Lead Webhook v2 (case-sensitive) */
   const payload = {
-    "First Name": $("f_first").value.trim(),
-    "Last Name": $("f_last").value.trim(),
-    "Phone": $("f_phone").value.trim(),
-    "Email": $("f_email").value.trim(),
-    "Test Results": score,
-    ...TRACKING,
+    firstName: $("f_first").value.trim(),
+    lastName: $("f_last").value.trim(),
+    phone: $("f_phone").value.trim(),
+    email: $("f_email").value.trim(),
+    campaignId: CONFIG.campaignId,
+    formName: CONFIG.formName,
+    referralSource: "Internet",
+    message: `Sinus & Allergy Quiz (SNOT-22)\nTotal score: ${score}/110 (${band.label})\n\n${answerLines}`,
   };
-  QUESTIONS.forEach((q, i) => {
-    payload[`${i + 1}. ${q.text}`] = `${answers[i]} - ${OPTIONS[answers[i]]}`;
-  });
-  return payload;
+  Object.entries(ATTRIBUTION).forEach(([k, v]) => { if (v) payload[k] = v; });
+  return { payload, score };
 }
 
 $("contactForm").addEventListener("submit", async (e) => {
@@ -477,28 +485,29 @@ $("contactForm").addEventListener("submit", async (e) => {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
 
-  const payload = buildPayload();
+  const { payload, score } = buildPayload();
 
   try {
     if (CONFIG.submitUrl) {
-      await fetch(CONFIG.submitUrl, {
+      const resp = await fetch(CONFIG.submitUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (!resp.ok) console.error("Quiz submission rejected:", resp.status, await resp.text());
     } else {
       console.warn("CONFIG.submitUrl not set; submission not sent.", payload);
     }
     // Fire GTM/GA event if available on the page
     if (window.dataLayer) {
-      window.dataLayer.push({ event: "quiz_submission", quiz: "sinus-allergy", score: payload["Test Results"] });
+      window.dataLayer.push({ event: "quiz_submission", quiz: "sinus-allergy", score: score });
     }
   } catch (err) {
     console.error("Quiz submission failed:", err);
     // Still show results; don't strand the user. Consider queuing a retry server-side.
   }
 
-  showResults(payload["Test Results"]);
+  showResults(score);
   btn.disabled = false;
   btn.textContent = "See My Results";
 });
