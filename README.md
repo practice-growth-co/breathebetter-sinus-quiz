@@ -4,7 +4,7 @@ A self-contained rebuild of the SNOT-22 quiz formerly at
 `https://breathebetterhuntsville.com/sinus-allergy-quiz/`. One file
 ([index.html](index.html)), no dependencies, mobile-first.
 
-- **Staging:** https://practice-growth-co.github.io/breathebetter-sinus-quiz/
+- **Staging:** https://breathebetter-sinus-quiz.pages.dev/
 - **Deploys:** push to `main` on `practice-growth-co/breathebetter-sinus-quiz`; GitHub Pages rebuilds in ~1 min.
 
 ## Architecture
@@ -62,7 +62,7 @@ Add an **Embed** element to the page and paste:
 <script>
   (function () {
     var f = document.createElement("iframe");
-    f.src = "https://practice-growth-co.github.io/breathebetter-sinus-quiz/" + window.location.search;
+    f.src = "https://breathebetter-sinus-quiz.pages.dev/" + window.location.search;
     f.style.cssText = "width:100%;min-height:760px;border:0;";
     f.title = "Sinus and Allergy Quiz";
     f.loading = "lazy";
